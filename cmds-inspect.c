@@ -632,6 +632,256 @@ out:
 	return !!ret;
 }
 
+static const char * const cmd_chunk_stats_usage[] = {
+	"btrfs inspect-internal chunk-stats <path>",
+	"Show chunks (block groups) layout",
+	NULL
+};
+
+struct chunk_stats_entry {
+	u64 devid;
+	u64 start;
+	u64 lstart;
+	u64 length;
+	u64 flags;
+	u32 age;
+	u32 pnumber;
+};
+
+struct chunk_stats_ctx {
+	unsigned length;
+	unsigned size;
+	struct chunk_stats_entry *stats;
+};
+
+int cmp_cse_devid_start(const void *va, const void *vb)
+{
+	const struct chunk_stats_entry *a = va;
+	const struct chunk_stats_entry *b = vb;
+
+	if (a->devid < b->devid)
+		return -1;
+	if (a->devid > b->devid)
+		return 1;
+
+	if (a->start < b->start)
+		return -1;
+	if (a->start == b->start) {
+		fprintf(stderr, "ERROR: chunks start on same offset in the same device\n");
+		exit(2);
+	}
+	return 1;
+}
+
+int cmp_cse_devid_lstart(const void *va, const void *vb)
+{
+	const struct chunk_stats_entry *a = va;
+	const struct chunk_stats_entry *b = vb;
+
+	if (a->devid < b->devid)
+		return -1;
+	if (a->devid > b->devid)
+		return 1;
+
+	if (a->lstart < b->lstart)
+		return -1;
+	if (a->lstart == b->lstart) {
+		fprintf(stderr, "ERROR: chunks logically start on same offset in the same device\n");
+		/* exit(2); */
+		return 0;
+	}
+	return 1;
+}
+
+void print_chunk_stats(struct chunk_stats_ctx *ctx)
+{
+	u64 devid;
+	struct chunk_stats_entry e;
+	int i;
+	int chidx;
+	u64 lastend = 0;
+	u64 age;
+	int pretty = 1;
+	int by_age = 1;
+#define N(n) do{if(pretty){printf("% 9s",pretty_size((n)));}else{printf("% 12llu",(unsigned long long)(n));}printf("  ");}while(0)
+
+	/*
+	 * Sort by logical offset (order of creation)
+	 */
+	qsort(ctx->stats, ctx->length, sizeof(ctx->stats[0]), cmp_cse_devid_lstart);
+	devid = 0;
+	age = 0;
+	for (i = 0; i < ctx->length; i++) {
+		e = ctx->stats[i];
+		if (e.devid != devid) {
+			devid = e.devid;
+			age = 0;
+		}
+		ctx->stats[i].age = age;
+		age++;
+	}
+
+	/*
+	 * Sort by physical offset (on-device location)
+	 */
+	qsort(ctx->stats, ctx->length, sizeof(ctx->stats[0]), cmp_cse_devid_start);
+	devid = 0;
+	age = 0;
+	for (i = 0; i < ctx->length; i++) {
+		e = ctx->stats[i];
+		if (e.devid != devid) {
+			devid = e.devid;
+			age = 0;
+		}
+		ctx->stats[i].pnumber = age;
+		age++;
+	}
+
+	/*
+	 * Order by physical offset is the default, pay the price if not
+	 */
+	if (by_age)
+		qsort(ctx->stats, ctx->length, sizeof(ctx->stats[0]), cmp_cse_devid_lstart);
+
+	devid = 0;
+	for (i = 0; i < ctx->length; i++) {
+		e = ctx->stats[i];
+		if (e.devid != devid) {
+			devid = e.devid;
+			printf("Chunks on device id: %llu\n", devid);
+			printf("PNumber            Type     PStart     Length       PEnd      Age    LStart\n");
+			/* printf("---------------------------------------------------\n"); */
+			chidx = 0;
+			lastend = 0;
+		}
+		if (!by_age && lastend > 0 && e.start != lastend) {
+			printf(". GAP . ");
+			/* N(lastend); */
+			N(e.start - lastend);
+			/* N(e.start); */
+			printf(". . .\n");
+		}
+
+		printf("% 7llu ", e.pnumber);
+		printf("% 8s/%6s  ", btrfs_group_type_str(e.flags),
+				btrfs_group_profile_str(e.flags));
+		N(e.start);
+		N(e.length);
+		N(e.start + e.length);
+		printf("% 7llu ", e.age);
+		N(e.lstart);
+		printf("\n");
+
+		lastend = e.start + e.length;
+		chidx++;
+	}
+}
+
+static int cmd_chunk_stats(int argc, char **argv)
+{
+	struct btrfs_ioctl_search_args args;
+	struct btrfs_ioctl_search_key *sk = &args.key;
+	struct btrfs_ioctl_search_header sh;
+	unsigned long off = 0;
+	int ret;
+	int fd;
+	int i;
+	int e;
+	DIR *dirstream = NULL;
+	const char *path = argv[1];
+	struct chunk_stats_ctx ctx = {
+		.length = 0,
+		.size = 1024,
+		.stats = NULL
+	};
+
+	ctx.stats = calloc(ctx.size, sizeof(ctx.stats[0]));
+	if (!ctx.stats)
+		goto out_nomem;
+
+	fd = open_file_or_dir(path, &dirstream);
+	if (fd < 0) {
+	        fprintf(stderr, "ERROR: can't access '%s'\n", path);
+		return 1;
+	}
+
+	memset(&args, 0, sizeof(args));
+	sk->tree_id = BTRFS_CHUNK_TREE_OBJECTID;
+	sk->min_objectid = BTRFS_FIRST_CHUNK_TREE_OBJECTID;
+	sk->max_objectid = BTRFS_FIRST_CHUNK_TREE_OBJECTID;
+	sk->min_type = BTRFS_CHUNK_ITEM_KEY;
+	sk->max_type = BTRFS_CHUNK_ITEM_KEY;
+	sk->max_offset = (u64)-1;
+	sk->max_transid = (u64)-1;
+
+	while (1) {
+		sk->nr_items = 4096;
+		ret = ioctl(fd, BTRFS_IOC_TREE_SEARCH, &args);
+		e = errno;
+		if (ret < 0) {
+			fprintf(stderr, "ERROR: can't perform the search - %s\n",
+				strerror(e));
+			return 1;
+		}
+		if (sk->nr_items == 0)
+			break;
+
+		off = 0;
+		for (i = 0; i < sk->nr_items; i++) {
+			struct btrfs_chunk *item;
+			struct btrfs_stripe *stripes;
+			int sidx;
+
+			memcpy(&sh, args.buf + off, sizeof(sh));
+			off += sizeof(sh);
+			item = (struct btrfs_chunk*)(args.buf + off);
+			off += sh.len;
+
+			stripes = &item->stripe;
+			for (sidx = 0; sidx < item->num_stripes; sidx++) {
+				struct chunk_stats_entry *e;
+
+				e = &ctx.stats[ctx.length];
+				e->devid = stripes[sidx].devid;
+				e->start = stripes[sidx].offset;
+				e->lstart = sh.offset;
+				e->length = item->length;
+				e->flags = item->type;
+				e->age = -1;
+				e->pnumber = -1;
+
+				ctx.length++;
+
+				if (ctx.length == ctx.size) {
+					ctx.size += 1024;
+					ctx.stats = realloc(ctx.stats, ctx.size
+						* sizeof(ctx.stats[0]));
+					if (!ctx.stats)
+						goto out_nomem;
+				}
+			}
+
+			sk->min_objectid = sh.objectid;
+			sk->min_type = sh.type;
+			sk->min_offset = sh.offset;
+		}
+		if (sk->min_offset < (u64)-1)
+			sk->min_offset++;
+		else
+			break;
+	}
+
+	print_chunk_stats(&ctx);
+	free(ctx.stats);
+
+	close_file_or_dir(fd, dirstream);
+	return 0;
+
+out_nomem:
+	fprintf(stderr, "ERROR: not enough memory\n");
+	return 1;
+}
+
 static const char inspect_cmd_group_info[] =
 "query various internal information";
 
@@ -647,6 +897,8 @@ const struct cmd_group inspect_cmd_group = {
 			0 },
 		{ "min-dev-size", cmd_inspect_min_dev_size,
 			cmd_inspect_min_dev_size_usage, NULL, 0 },
+		{ "chunk-stats", cmd_chunk_stats, cmd_chunk_stats_usage, NULL,
+			0 },
 		NULL_CMD_STRUCT
 	}
 };
