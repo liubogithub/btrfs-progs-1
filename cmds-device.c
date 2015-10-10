@@ -163,16 +163,35 @@ static int _cmd_device_remove(int argc, char **argv,
 		struct	btrfs_ioctl_vol_args arg;
 		int	res;
 
-		if (is_block_device(argv[i]) != 1) {
+		struct  btrfs_ioctl_vol_args_v2 argv2 = {0};
+		int     its_num = false;
+
+		if (is_numerical(argv[i])) {
+			argv2.devid = arg_strtou64(argv[i]);
+			argv2.flags = BTRFS_DEVICE_BY_ID;
+			its_num = true;
+		} else if (is_block_device(argv[i]) == 1) {
+			strncpy_null(argv2.name, argv[i]);
+		} else {
 			fprintf(stderr,
-				"ERROR: %s is not a block device\n", argv[i]);
+				"ERROR: %s is not a block device or devid\n", argv[i]);
 			ret++;
 			continue;
 		}
-		memset(&arg, 0, sizeof(arg));
-		strncpy_null(arg.name, argv[i]);
-		res = ioctl(fdmnt, BTRFS_IOC_RM_DEV, &arg);
+		res = ioctl(fdmnt, BTRFS_IOC_RM_DEV_V2, &argv2);
 		e = errno;
+		if (res && e == ENOTTY) {
+			if (its_num) {
+				fprintf(stderr,
+				"Error: Kernel does not support delete by devid\n");
+				ret = 1;
+				continue;
+			}
+			memset(&arg, 0, sizeof(arg));
+			strncpy_null(arg.name, argv[i]);
+			res = ioctl(fdmnt, BTRFS_IOC_RM_DEV, &arg);
+			e = errno;
+		}
 		if (res) {
 			const char *msg;
 
@@ -180,9 +199,16 @@ static int _cmd_device_remove(int argc, char **argv,
 				msg = btrfs_err_str(res);
 			else
 				msg = strerror(e);
-			fprintf(stderr,
-				"ERROR: error removing the device '%s' - %s\n",
-				argv[i], msg);
+
+			if (its_num)
+				fprintf(stderr,
+					"ERROR: error removing the devid '%llu' - %s\n",
+					argv2.devid, msg);
+			else
+				fprintf(stderr,
+					"ERROR: error removing the device '%s' - %s\n",
+					argv[i], msg);
+
 			ret++;
 		}
 	}
@@ -192,7 +218,7 @@ static int _cmd_device_remove(int argc, char **argv,
 }
 
 static const char * const cmd_device_remove_usage[] = {
-	"btrfs device remove <device> [<device>...] <path>",
+	"btrfs device remove <device>|<devid> [<device>|<devid>...] <path>",
 	"Remove a device from a filesystem",
 	NULL
 };
@@ -203,7 +229,7 @@ static int cmd_device_remove(int argc, char **argv)
 }
 
 static const char * const cmd_device_delete_usage[] = {
-	"btrfs device delete <device> [<device>...] <path>",
+	"btrfs device delete <device>|<devid> [<device>|<devid>...] <path>",
 	"Remove a device from a filesystem",
 	NULL
 };
