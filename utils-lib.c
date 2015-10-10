@@ -38,3 +38,14 @@ u64 arg_strtou64(const char *str)
 	}
 	return value;
 }
+
+int is_numerical(const char *str)
+{
+	if (!(*str >= '0' && *str <= '9'))
+		return 0;
+	while (*str >= '0' && *str <= '9')
+		str++;
+	if (*str != '\0')
+		return 0;
+	return 1;
+}
