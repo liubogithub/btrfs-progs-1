@@ -244,11 +244,30 @@ static int parse_filters(char *filters, struct btrfs_balance_args *args)
 				       "an argument\n");
 				return 1;
 			}
-			if (parse_u64(value, &args->usage) ||
-			    args->usage > 100) {
-				fprintf(stderr, "Invalid usage argument: %s\n",
-				       value);
-				return 1;
+			if (parse_u64(value, &args->usage)) {
+				if (parse_range_u32(value, &args->usage_min,
+							&args->usage_max)) {
+					fprintf(stderr,
+						"Invalid usage argument: %s\n",
+						value);
+					return 1;
+				}
+				if (args->usage_max > 100) {
+					fprintf(stderr,
+						"Invalid usage argument: %s\n",
+						value);
+				}
+				args->flags &= ~BTRFS_BALANCE_ARGS_USAGE;
+				args->flags |= BTRFS_BALANCE_ARGS_USAGE_RANGE;
+			} else {
+				if (args->usage > 100) {
+					fprintf(stderr,
+						"Invalid usage argument: %s\n",
+						value);
+					return 1;
+				}
+				args->flags &= ~BTRFS_BALANCE_ARGS_USAGE_RANGE;
+				args->flags |= BTRFS_BALANCE_ARGS_USAGE;
 			}
 			args->flags |= BTRFS_BALANCE_ARGS_USAGE;
 		} else if (!strcmp(this_char, "devid")) {
@@ -306,11 +325,31 @@ static int parse_filters(char *filters, struct btrfs_balance_args *args)
 				return 1;
 			}
 			if (parse_u64(value, &args->limit)) {
-				fprintf(stderr, "Invalid limit argument: %s\n",
-				       value);
+				if (parse_range_u32(value, &args->limit_min,
+							&args->limit_max)) {
+					fprintf(stderr,
+						"Invalid limit argument: %s\n",
+					       value);
+					return 1;
+				}
+				args->flags &= ~BTRFS_BALANCE_ARGS_LIMIT;
+				args->flags |= BTRFS_BALANCE_ARGS_LIMIT_RANGE;
+			} else {
+				args->flags &= ~BTRFS_BALANCE_ARGS_LIMIT_RANGE;
+				args->flags |= BTRFS_BALANCE_ARGS_LIMIT;
+			}
+		} else if (!strcmp(this_char, "stripes")) {
+			if (!value || !*value) {
+				fprintf(stderr,
+					"the stripes filter requires an argument\n");
 				return 1;
 			}
-			args->flags |= BTRFS_BALANCE_ARGS_LIMIT;
+			if (parse_range_u32(value, &args->stripes_min,
+					    &args->stripes_max)) {
+				fprintf(stderr, "Invalid stripes argument\n");
+				return 1;
+			}
+			args->flags |= BTRFS_BALANCE_ARGS_STRIPES_RANGE;
 		} else {
 			fprintf(stderr, "Unrecognized balance option '%s'\n",
 				this_char);
@@ -335,6 +374,10 @@ static void dump_balance_args(struct btrfs_balance_args *args)
 		printf(", profiles=%llu", (unsigned long long)args->profiles);
 	if (args->flags & BTRFS_BALANCE_ARGS_USAGE)
 		printf(", usage=%llu", (unsigned long long)args->usage);
+	if (args->flags & BTRFS_BALANCE_ARGS_USAGE_RANGE) {
+		printf(", usage=");
+		print_range_u32(args->usage_min, args->usage_max);
+	}
 	if (args->flags & BTRFS_BALANCE_ARGS_DEVID)
 		printf(", devid=%llu", (unsigned long long)args->devid);
 	if (args->flags & BTRFS_BALANCE_ARGS_DRANGE)
@@ -347,6 +390,14 @@ static void dump_balance_args(struct btrfs_balance_args *args)
 		       (unsigned long long)args->vend);
 	if (args->flags & BTRFS_BALANCE_ARGS_LIMIT)
 		printf(", limit=%llu", (unsigned long long)args->limit);
+	if (args->flags & BTRFS_BALANCE_ARGS_LIMIT_RANGE) {
+		printf(", limit=");
+		print_range_u32(args->limit_min, args->limit_max);
+	}
+	if (args->flags & BTRFS_BALANCE_ARGS_STRIPES_RANGE) {
+		printf(", stripes=");
+		print_range_u32(args->stripes_min, args->stripes_max);
+	}
 
 	printf("\n");
 }
