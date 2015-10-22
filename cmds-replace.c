@@ -65,17 +65,6 @@ static const char * const replace_cmd_group_usage[] = {
 	NULL
 };
 
-static int is_numerical(const char *str)
-{
-	if (!(*str >= '0' && *str <= '9'))
-		return 0;
-	while (*str >= '0' && *str <= '9')
-		str++;
-	if (*str != '\0')
-		return 0;
-	return 1;
-}
-
 static int dev_replace_cancel_fd = -1;
 static void dev_replace_sigint_handler(int signal)
 {
@@ -140,7 +129,6 @@ static int cmd_replace_start(int argc, char **argv)
 	int force_using_targetdev = 0;
 	u64 dstdev_block_count;
 	int do_not_background = 0;
-	int mixed = 0;
 	DIR *dirstream = NULL;
 	u64 srcdev_size;
 	u64 dstdev_size;
@@ -170,18 +158,9 @@ static int cmd_replace_start(int argc, char **argv)
 		usage(cmd_replace_start_usage);
 	path = argv[optind + 2];
 
-	fdmnt = open_path_or_dev_mnt(path, &dirstream);
-
-	if (fdmnt < 0) {
-		if (errno == EINVAL)
-			fprintf(stderr,
-				"ERROR: '%s' is not a mounted btrfs device\n",
-				path);
-		else
-			fprintf(stderr, "ERROR: can't access '%s': %s\n",
-				path, strerror(errno));
+	fdmnt = open_path_or_dev_mnt(path, &dirstream, 1);
+	if (fdmnt < 0)
 		goto leave_with_error;
-	}
 
 	/* check for possible errors before backgrounding */
 	status_args.cmd = BTRFS_IOCTL_DEV_REPLACE_CMD_STATUS;
@@ -223,7 +202,7 @@ static int cmd_replace_start(int argc, char **argv)
 		goto leave_with_error;
 	}
 
-	if (is_numerical(srcdev)) {
+	if (string_is_numerical(srcdev)) {
 		struct btrfs_ioctl_fs_info_args fi_args;
 		struct btrfs_ioctl_dev_info_args *di_args = NULL;
 
@@ -281,7 +260,7 @@ static int cmd_replace_start(int argc, char **argv)
 	strncpy((char *)start_args.start.tgtdev_name, dstdev,
 		BTRFS_DEVICE_PATH_NAME_MAX);
 	ret = btrfs_prepare_device(fddstdev, dstdev, 1, &dstdev_block_count, 0,
-				 &mixed, 0);
+				0);
 	if (ret)
 		goto leave_with_error;
 
@@ -357,7 +336,6 @@ static const char *const cmd_replace_status_usage[] = {
 static int cmd_replace_status(int argc, char **argv)
 {
 	int fd;
-	int e;
 	int c;
 	char *path;
 	int once = 0;
@@ -379,13 +357,9 @@ static int cmd_replace_status(int argc, char **argv)
 		usage(cmd_replace_status_usage);
 
 	path = argv[optind];
-	fd = open_file_or_dir(path, &dirstream);
-	e = errno;
-	if (fd < 0) {
-		fprintf(stderr, "ERROR: can't access \"%s\": %s\n",
-			path, strerror(e));
+	fd = btrfs_open_dir(path, &dirstream, 1);
+	if (fd < 0)
 		return 1;
-	}
 
 	ret = print_replace_status(fd, path, once);
 	close_file_or_dir(fd, dirstream);
@@ -550,12 +524,9 @@ static int cmd_replace_cancel(int argc, char **argv)
 		usage(cmd_replace_cancel_usage);
 
 	path = argv[optind];
-	fd = open_file_or_dir(path, &dirstream);
-	if (fd < 0) {
-		fprintf(stderr, "ERROR: can't access \"%s\": %s\n",
-			path, strerror(errno));
+	fd = btrfs_open_dir(path, &dirstream, 1);
+	if (fd < 0)
 		return 1;
-	}
 
 	args.cmd = BTRFS_IOCTL_DEV_REPLACE_CMD_CANCEL;
 	args.result = BTRFS_IOCTL_DEV_REPLACE_RESULT_NO_RESULT;

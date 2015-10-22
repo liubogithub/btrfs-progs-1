@@ -88,44 +88,129 @@ static int parse_u64(const char *str, u64 *result)
 	return 0;
 }
 
+/*
+ * Parse range that's missing some part that can be implicit:
+ * a..b	- exact range, a can be equal to b
+ * a..	- implicitly unbounded maximum (end == (u64)-1)
+ * ..b	- implicitly starting at 0
+ * a	- invalid; unclear semantics, use parse_u64 instead
+ *
+ * Returned values are u64, value validation and interpretation should be done
+ * by the caller.
+ */
 static int parse_range(const char *range, u64 *start, u64 *end)
 {
 	char *dots;
+	char *endptr;
+	const char *rest;
+	int skipped = 0;
 
 	dots = strstr(range, "..");
-	if (dots) {
-		const char *rest = dots + 2;
-		int skipped = 0;
+	if (!dots)
+		return 1;
 
-		*dots = 0;
+	rest = dots + 2;
 
-		if (!*rest) {
-			*end = (u64)-1;
-			skipped++;
-		} else {
-			if (parse_u64(rest, end))
-				return 1;
-		}
-		if (dots == range) {
-			*start = 0;
-			skipped++;
-		} else {
-			if (parse_u64(range, start))
-				return 1;
-		}
+	if (!*rest) {
+		*end = (u64)-1;
+		skipped++;
+	} else {
+		*end = strtoull(rest, &endptr, 10);
+		if (*endptr)
+			return 1;
+	}
+	if (dots == range) {
+		*start = 0;
+		skipped++;
+	} else {
+		*end = strtoull(range, &endptr, 10);
+		if (*endptr != 0 && *endptr != '.')
+			return 1;
+	}
 
+	if (*start > *end) {
+		fprintf(stderr,
+			"ERROR: range %llu..%llu doesn't make sense\n",
+			(unsigned long long)*start,
+			(unsigned long long)*end);
+		return 1;
+	}
+
+	if (skipped <= 1)
+		return 0;
+
+	return 1;
+}
+
+/*
+ * Parse range and check if start < end
+ */
+static int parse_range_strict(const char *range, u64 *start, u64 *end)
+{
+	if (parse_range(range, start, end) == 0) {
 		if (*start >= *end) {
-			fprintf(stderr, "Range %llu..%llu doesn't make "
-				"sense\n", (unsigned long long)*start,
+			fprintf(stderr,
+				"ERROR: range %llu..%llu not allowed\n",
+				(unsigned long long)*start,
 				(unsigned long long)*end);
 			return 1;
 		}
-
-		if (skipped <= 1)
-			return 0;
+		return 0;
 	}
 
 	return 1;
+}
+
+/*
+ * Convert 64bit range to 32bit with boundary checkso
+ */
+static int range_to_u32(u64 start, u64 end, u32 *start32, u32 *end32)
+{
+	if (start > (u32)-1)
+		return 1;
+
+	if (end != (u64)-1 && end > (u32)-1)
+		return 1;
+
+	*start32 = (u32)start;
+	*end32 = (u32)end;
+
+	return 0;
+}
+
+__attribute__ ((unused))
+static int parse_range_u32(const char *range, u32 *start, u32 *end)
+{
+	u64 tmp_start;
+	u64 tmp_end;
+
+	if (parse_range(range, &tmp_start, &tmp_end))
+		return 1;
+
+	if (range_to_u32(tmp_start, tmp_end, start, end))
+		return 1;
+
+	return 0;
+}
+
+__attribute__ ((unused))
+static void print_range(u64 start, u64 end)
+{
+	if (start)
+		printf("%llu", (unsigned long long)start);
+	printf("..");
+	if (end != (u64)-1)
+		printf("%llu", (unsigned long long)end);
+}
+
+__attribute__ ((unused))
+static void print_range_u32(u32 start, u32 end)
+{
+	if (start)
+		printf("%u", start);
+	printf("..");
+	if (end != (u32)-1)
+		printf("%u", end);
 }
 
 static int parse_filters(char *filters, struct btrfs_balance_args *args)
@@ -185,7 +270,7 @@ static int parse_filters(char *filters, struct btrfs_balance_args *args)
 				       "an argument\n");
 				return 1;
 			}
-			if (parse_range(value, &args->pstart, &args->pend)) {
+			if (parse_range_strict(value, &args->pstart, &args->pend)) {
 				fprintf(stderr, "Invalid drange argument\n");
 				return 1;
 			}
@@ -196,7 +281,7 @@ static int parse_filters(char *filters, struct btrfs_balance_args *args)
 				       "an argument\n");
 				return 1;
 			}
-			if (parse_range(value, &args->vstart, &args->vend)) {
+			if (parse_range_strict(value, &args->vstart, &args->vend)) {
 				fprintf(stderr, "Invalid vrange argument\n");
 				return 1;
 			}
@@ -306,11 +391,9 @@ static int do_balance(const char *path, struct btrfs_ioctl_balance_args *args,
 	int e;
 	DIR *dirstream = NULL;
 
-	fd = open_file_or_dir(path, &dirstream);
-	if (fd < 0) {
-		fprintf(stderr, "ERROR: can't access '%s'\n", path);
+	fd = btrfs_open_dir(path, &dirstream, 1);
+	if (fd < 0)
 		return 1;
-	}
 
 	ret = ioctl(fd, BTRFS_IOC_BALANCE_V2, args);
 	e = errno;
@@ -503,11 +586,9 @@ static int cmd_balance_pause(int argc, char **argv)
 
 	path = argv[1];
 
-	fd = open_file_or_dir(path, &dirstream);
-	if (fd < 0) {
-		fprintf(stderr, "ERROR: can't access '%s'\n", path);
+	fd = btrfs_open_dir(path, &dirstream, 1);
+	if (fd < 0)
 		return 1;
-	}
 
 	ret = ioctl(fd, BTRFS_IOC_BALANCE_CTL, BTRFS_BALANCE_CTL_PAUSE);
 	e = errno;
@@ -544,11 +625,9 @@ static int cmd_balance_cancel(int argc, char **argv)
 
 	path = argv[1];
 
-	fd = open_file_or_dir(path, &dirstream);
-	if (fd < 0) {
-		fprintf(stderr, "ERROR: can't access '%s'\n", path);
+	fd = btrfs_open_dir(path, &dirstream, 1);
+	if (fd < 0)
 		return 1;
-	}
 
 	ret = ioctl(fd, BTRFS_IOC_BALANCE_CTL, BTRFS_BALANCE_CTL_CANCEL);
 	e = errno;
@@ -586,11 +665,9 @@ static int cmd_balance_resume(int argc, char **argv)
 
 	path = argv[1];
 
-	fd = open_file_or_dir(path, &dirstream);
-	if (fd < 0) {
-		fprintf(stderr, "ERROR: can't access '%s'\n", path);
+	fd = btrfs_open_dir(path, &dirstream, 1);
+	if (fd < 0)
 		return 1;
-	}
 
 	memset(&args, 0, sizeof(args));
 	args.flags |= BTRFS_BALANCE_RESUME;
@@ -679,11 +756,9 @@ static int cmd_balance_status(int argc, char **argv)
 
 	path = argv[optind];
 
-	fd = open_file_or_dir(path, &dirstream);
-	if (fd < 0) {
-		fprintf(stderr, "ERROR: can't access '%s'\n", path);
+	fd = btrfs_open_dir(path, &dirstream, 1);
+	if (fd < 0)
 		return 2;
-	}
 
 	ret = ioctl(fd, BTRFS_IOC_BALANCE_PROGRESS, &args);
 	e = errno;

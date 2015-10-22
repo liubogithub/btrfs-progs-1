@@ -22,6 +22,7 @@
 #include <sys/stat.h>
 #include "ctree.h"
 #include <dirent.h>
+#include <stdarg.h>
 
 #define BTRFS_MKFS_SYSTEM_GROUP_SIZE (4 * 1024 * 1024)
 #define BTRFS_MKFS_SMALL_VOLUME_SIZE (1024 * 1024 * 1024)
@@ -120,7 +121,7 @@ int make_btrfs(int fd, struct btrfs_mkfs_config *cfg);
 int btrfs_make_root_dir(struct btrfs_trans_handle *trans,
 			struct btrfs_root *root, u64 objectid);
 int btrfs_prepare_device(int fd, char *file, int zero_end, u64 *block_count_ret,
-			 u64 max_block_count, int *mixed, int discard);
+			 u64 max_block_count, int discard);
 int btrfs_add_to_fsid(struct btrfs_trans_handle *trans,
 		      struct btrfs_root *root, int fd, char *path,
 		      u64 block_count, u32 io_width, u32 io_align,
@@ -157,7 +158,7 @@ char *__strncpy__null(char *dest, const char *src, size_t n);
 int is_block_device(const char *file);
 int is_mount_point(const char *file);
 int check_arg_type(const char *input);
-int open_path_or_dev_mnt(const char *path, DIR **dirstream);
+int open_path_or_dev_mnt(const char *path, DIR **dirstream, int verbose);
 int btrfs_open_dir(const char *path, DIR **dirstream, int verbose);
 u64 btrfs_device_size(int fd, struct stat *st);
 /* Helper to always get proper size of the destination string */
@@ -269,5 +270,60 @@ const char *get_argv0_buf(void);
 	"-t|--tbytes        show sizes in TiB, or TB with --si"
 
 unsigned int get_unit_mode_from_arg(int *argc, char *argv[], int df_mode);
+int string_is_numerical(const char *str);
+
+static inline void warning(const char *fmt, ...)
+{
+	va_list args;
+
+	fputs("WARNING: ", stderr);
+	va_start(args, fmt);
+	vfprintf(stderr, fmt, args);
+	va_end(args);
+	fputc('\n', stderr);
+}
+
+static inline void error(const char *fmt, ...)
+{
+	va_list args;
+
+	fputs("ERROR: ", stderr);
+	va_start(args, fmt);
+	vfprintf(stderr, fmt, args);
+	va_end(args);
+	fputc('\n', stderr);
+}
+
+static inline int warning_on(int condition, const char *fmt, ...)
+{
+	va_list args;
+
+	if (!condition)
+		return 0;
+
+	fputs("WARNING: ", stderr);
+	va_start(args, fmt);
+	vfprintf(stderr, fmt, args);
+	va_end(args);
+	fputc('\n', stderr);
+
+	return 1;
+}
+
+static inline int error_on(int condition, const char *fmt, ...)
+{
+	va_list args;
+
+	if (!condition)
+		return 0;
+
+	fputs("ERROR: ", stderr);
+	va_start(args, fmt);
+	vfprintf(stderr, fmt, args);
+	va_end(args);
+	fputc('\n', stderr);
+
+	return 1;
+}
 
 #endif

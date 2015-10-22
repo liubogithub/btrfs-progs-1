@@ -85,13 +85,12 @@ static struct extent_record *btrfs_new_extent_record(struct extent_buffer *eb)
 {
 	struct extent_record *rec;
 
-	rec = malloc(sizeof(*rec));
+	rec = calloc(1, sizeof(*rec));
 	if (!rec) {
 		fprintf(stderr, "Fail to allocate memory for extent record.\n");
 		exit(1);
 	}
 
-	memset(rec, 0, sizeof(*rec));
 	rec->cache.start = btrfs_header_bytenr(eb);
 	rec->cache.size = eb->len;
 	rec->generation = btrfs_header_generation(eb);
@@ -847,11 +846,16 @@ static int scan_devices(struct recover_control *rc)
 	if (!dev_scans)
 		return -ENOMEM;
 	t_scans = (pthread_t *)malloc(sizeof(pthread_t) * devnr);
-	if (!t_scans)
+	if (!t_scans) {
+		free(dev_scans);
 		return -ENOMEM;
+	}
 	t_rets = (long *)malloc(sizeof(long) * devnr);
-	if (!t_rets)
+	if (!t_rets) {
+		free(dev_scans);
+		free(t_scans);
 		return -ENOMEM;
+	}
 
 	list_for_each_entry(dev, &rc->fs_devices->devices, dev_list) {
 		fd = open(dev->name, O_RDONLY);
@@ -2228,10 +2232,9 @@ static int btrfs_recover_chunks(struct recover_control *rc)
 		nstripes = btrfs_get_device_extents(bg->objectid,
 						    &rc->devext.no_chunk_orphans,
 						    &devexts);
-		chunk = malloc(btrfs_chunk_record_size(nstripes));
+		chunk = calloc(1, btrfs_chunk_record_size(nstripes));
 		if (!chunk)
 			return -ENOMEM;
-		memset(chunk, 0, btrfs_chunk_record_size(nstripes));
 		INIT_LIST_HEAD(&chunk->dextents);
 		chunk->bg_rec = bg;
 		chunk->cache.start = bg->objectid;
