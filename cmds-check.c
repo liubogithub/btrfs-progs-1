@@ -9373,6 +9373,7 @@ const char * const cmd_check_usage[] = {
 	"",
 	"-s|--super <superblock>     use this superblock copy",
 	"-b|--backup                 use the backup root copy",
+	"--force                     skip mount checks, repair is not possible",
 	"--repair                    try to repair the filesystem",
 	"--readonly                  run in read-only mode (default)",
 	"--init-csum-tree            create a new CRC tree",
@@ -9395,17 +9396,18 @@ int cmd_check(int argc, char **argv)
 	u64 subvolid = 0;
 	u64 tree_root_bytenr = 0;
 	char uuidbuf[BTRFS_UUID_UNPARSED_SIZE];
-	int ret;
+	int ret = 0;
 	u64 num;
 	int init_csum_tree = 0;
 	int readonly = 0;
 	int qgroup_report = 0;
 	enum btrfs_open_ctree_flags ctree_flags = OPEN_CTREE_EXCLUSIVE;
+	int force = 0;
 
 	while(1) {
 		int c;
 		enum { OPT_REPAIR = 257, OPT_INIT_CSUM, OPT_INIT_EXTENT,
-			OPT_CHECK_CSUM, OPT_READONLY };
+			OPT_CHECK_CSUM, OPT_READONLY, OPT_VAL_FORCE };
 		static const struct option long_options[] = {
 			{ "super", required_argument, NULL, 's' },
 			{ "repair", no_argument, NULL, OPT_REPAIR },
@@ -9418,6 +9420,7 @@ int cmd_check(int argc, char **argv)
 			{ "qgroup-report", no_argument, NULL, 'Q' },
 			{ "tree-root", required_argument, NULL, 'r' },
 			{ "progress", no_argument, NULL, 'p' },
+			{ "force", no_argument, NULL, OPT_VAL_FORCE },
 			{ NULL, 0, NULL, 0}
 		};
 
@@ -9479,6 +9482,9 @@ int cmd_check(int argc, char **argv)
 			case OPT_CHECK_CSUM:
 				check_data_csum = 1;
 				break;
+			case OPT_VAL_FORCE:
+				force = 1;
+				break;
 		}
 	}
 	argc = argc - optind;
@@ -9500,13 +9506,25 @@ int cmd_check(int argc, char **argv)
 	radix_tree_init();
 	cache_tree_init(&root_cache);
 
-	if((ret = check_mounted(argv[optind])) < 0) {
-		fprintf(stderr, "Could not check mount status: %s\n", strerror(-ret));
-		goto err_out;
-	} else if(ret) {
-		fprintf(stderr, "%s is currently mounted. Aborting.\n", argv[optind]);
-		ret = -EBUSY;
-		goto err_out;
+	if (!force) {
+		ret = check_mounted(argv[optind]);
+		if (ret < 0) {
+			fprintf(stderr, "Could not check mount status: %s\n",
+				strerror(-ret));
+			goto err_out;
+		} else if (ret) {
+			fprintf(stderr, "%s is currently mounted. Aborting.\n",
+				argv[optind]);
+			ret = -EBUSY;
+			goto err_out;
+		}
+	} else {
+		if (repair) {
+			fprintf(stderr, "ERROR: repair without mount checks is not supported\n");
+			ret = 1;
+			goto err_out;
+		}
+		printf("WARNING: skipping mount checks\n");
 	}
 
 	/* only allow partial opening under repair mode */
