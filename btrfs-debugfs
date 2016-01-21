@@ -381,7 +381,7 @@ def print_block_groups(mountpoint):
     print "total_free %Lu min_used %Lu free_of_min_used %Lu block_group_of_min_used %Lu" %\
      (total_free, min_used, free_of_min_used, bg_of_min_used)
     if (total_free - free_of_min_used) >= min_used:
-        print "balance block group (%Lu) can reduce the number of data block group" % bg_of_min_used
+        print "balance block group -dvrange=%Lu..%Lu can reduce the number of data block group" % (bg_of_min_used, bg_of_min_used+1)
 
     return 0
 
