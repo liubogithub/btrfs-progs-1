@@ -403,6 +403,10 @@ uninstall:
 	cd $(DESTDIR)$(libdir); $(RM) -f $(lib_links) $(libs)
 	cd $(DESTDIR)$(bindir); $(RM) -f btrfsck fsck.btrfs $(progs_install)
 
+cscope:
+	find ./ -name '*.[ch]' -not -type l -print > cscope.files
+	cscope -b -f cscope.out
+
 ifneq ($(MAKECMDGOALS),clean)
 -include $(objects:.o=.o.d) $(cmds_objects:.o=.o.d) $(subst .btrfs,, $(filter-out btrfsck.o.d, $(progs:=.o.d)))
 endif
