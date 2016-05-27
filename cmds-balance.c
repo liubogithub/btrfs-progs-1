@@ -493,6 +493,106 @@ out:
 	return ret;
 }
 
+/* return 0 if balance remove data a block group, return 1 if it does not */
+static int search_data_bgs(const char *path)
+{
+	struct btrfs_ioctl_search_args_v2 *args;
+	struct btrfs_ioctl_search_key *sk;
+	struct btrfs_ioctl_search_header *header;
+	struct btrfs_block_group_item *bg;
+	DIR *dirstream = NULL;
+	int e;
+	int args_size = 65536;
+	int fd;
+	int i;
+	char buf[args_size];
+	u64 total_free = 0;
+	u64 min_used = (u64)-1;
+	u64 free_of_min_used = 0;
+	u64 bg_of_min_used = 0;
+	u64 flags;
+	u64 used;
+	int ret = 0;
+	char *p;
+
+	fd = btrfs_open_dir(path, &dirstream, 1);
+	if (fd < 0)
+		return 1;
+
+	memset(buf, 0, args_size);
+	args = (struct btrfs_ioctl_search_args_v2 *)buf;
+	sk = &(args->key);
+
+	sk->tree_id = BTRFS_EXTENT_TREE_OBJECTID;
+	sk->min_objectid = sk->min_offset = sk->min_transid = 0;
+	sk->max_objectid = sk->max_offset = sk->max_transid = (u64)-1;
+	sk->max_type = sk->min_type = BTRFS_BLOCK_GROUP_ITEM_KEY;
+	sk->nr_items = 65536;
+	args->buf_size = args_size - sizeof(struct btrfs_ioctl_search_args_v2);
+
+	while (1) {
+		ret = ioctl(fd, BTRFS_IOC_TREE_SEARCH_V2, args);
+		e = errno;
+		if (ret != 0) {
+			fprintf(stderr, "ret %d error '%s'\n", ret, strerror(e));
+			return ret;
+		}
+
+		// it should not happen.
+		if (sk->nr_items == 0)
+			break;
+
+		/*
+		 * BTRFS_IOC_TREE_SEARCH_V2: args->buf is in fact __u64 buf[0]
+		 * instead of char buf[0]
+		 */
+		p = (char *)args->buf;
+
+		for (i = 0; i < sk->nr_items; i++) {
+			header = (struct btrfs_ioctl_search_header *)p;
+
+			p += sizeof(*header);
+			if (header->type == BTRFS_BLOCK_GROUP_ITEM_KEY) {
+				bg = (struct btrfs_block_group_item *)p;
+				flags = btrfs_block_group_flags(bg);
+				used = btrfs_block_group_used(bg);
+				if (flags & BTRFS_BLOCK_GROUP_DATA) {
+					printf("block_group %15llu (len %11llu used %11llu)\n",
+						header->objectid, header->offset,
+						btrfs_block_group_used(bg));
+					total_free += header->offset - used;
+					if (min_used >= used) {
+						min_used = used;
+						free_of_min_used = header->offset - used;
+						bg_of_min_used = header->objectid;
+					}
+				}
+			}
+
+			p += header->len;
+			sk->min_objectid = header->objectid;
+		}
+
+		if (sk->min_objectid < sk->max_objectid)
+			sk->min_objectid += 1;
+		else
+			break;
+	}
+
+	printf("total_free %llu min_used bg %llu has (min_used %llu free %llu)\n",
+		total_free, bg_of_min_used, min_used, free_of_min_used);
+	if (total_free - free_of_min_used > min_used) {
+		printf("run 'btrfs balance start -dvrange=%llu..%llu your_mnt'\n",
+			bg_of_min_used, bg_of_min_used + 1);
+		ret = 0;
+	} else {
+		printf("Please do not balance data block groups, it won't work\n");
+		ret = 1;
+	}
+
+	return ret;
+}
+
 static const char * const cmd_balance_start_usage[] = {
 	"btrfs balance start [options] <path>",
 	"Balance chunks across the devices",
@@ -508,6 +608,7 @@ static const char * const cmd_balance_start_usage[] = {
 	"-m[filters]    act on metadata chunks",
 	"-s[filters]    act on system chunks (only under -f)",
 	"-v             be verbose",
+	"-c             only check if balance would make sense, not doing real job",
 	"-f             force reducing of metadata integrity",
 	"--full-balance do not print warning and do not delay start",
 	NULL
@@ -521,6 +622,7 @@ static int cmd_balance_start(int argc, char **argv)
 	int force = 0;
 	int verbose = 0;
 	unsigned start_flags = 0;
+	int check_data_bgs = 0;
 	int i;
 
 	memset(&args, 0, sizeof(args));
@@ -536,10 +638,11 @@ static int cmd_balance_start(int argc, char **argv)
 			{ "verbose", no_argument, NULL, 'v' },
 			{ "full-balance", no_argument, NULL,
 				GETOPT_VAL_FULL_BALANCE },
+			{ "check-only", no_argument, NULL, 'c' },
 			{ NULL, 0, NULL, 0 }
 		};
 
-		int opt = getopt_long(argc, argv, "d::s::m::fv", longopts, NULL);
+		int opt = getopt_long(argc, argv, "d::s::m::fvc", longopts, NULL);
 		if (opt < 0)
 			break;
 
@@ -574,6 +677,9 @@ static int cmd_balance_start(int argc, char **argv)
 		case GETOPT_VAL_FULL_BALANCE:
 			start_flags |= BALANCE_START_NOWARN;
 			break;
+		case 'c':
+			check_data_bgs = 1;
+			break;
 		default:
 			usage(cmd_balance_start_usage);
 		}
@@ -581,6 +687,14 @@ static int cmd_balance_start(int argc, char **argv)
 
 	if (check_argc_exact(argc - optind, 1))
 		usage(cmd_balance_start_usage);
+
+	if (check_data_bgs) {
+		if (verbose)
+			dump_ioctl_balance_args(&args);
+
+		printf("Checking data block group...\n");
+		return search_data_bgs(argv[optind]);
+	}
 
 	/*
 	 * allow -s only under --force, otherwise do with system chunks
